@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
-import { CheckCircle2, ScanLine, Trash2, UserPlus } from 'lucide-react';
+import { CheckCircle2, ScanLine, Trash2, UserPlus, X } from 'lucide-react';
 import { api } from '../../app/api.js';
 import { useCan, useDebounce, useDefaultWarehouse, useLookups, useMoney, useToast } from '../../app/hooks.js';
 import { fromCents, titleCase, toCents } from '../../app/format.js';
@@ -10,7 +10,7 @@ import { CustomerPicker } from '../../components/pickers.jsx';
 import CustomerForm from '../customers/CustomerForm.jsx';
 import { useScanListener } from '../scanner/hooks.js';
 import { CameraScanButton, PhoneScannerButton } from '../scanner/ScannerControls.jsx';
-import { addProduct, addUnit, computeTotals, patchLine, removeLine, resetCart, setField, setWarehouse } from './cartSlice.js';
+import { addLineUnit, addProduct, addUnit, computeTotals, lineQty, patchLine, removeLine, removeLineUnit, resetCart, setField, setWarehouse } from './cartSlice.js';
 
 const METHODS = ['CASH', 'CARD', 'BKASH', 'NAGAD', 'BANK'];
 
@@ -51,11 +51,14 @@ export default function POS() {
 
   const addFromProduct = (p) => {
     if (p.available <= 0) return toast.error(`${p.name} is out of stock in this warehouse`);
+    if (p.trackSerial && cart.items.some((l) => l.productId === p.id && l.trackSerial)) {
+      return toast.info(`${p.name} is already in the cart – add its serial numbers in that row`);
+    }
     dispatch(addProduct(p));
     if (p.trackSerial) toast.info('Scan or choose a serial number for this item');
   };
 
-  // One entry point for EVERY scan source: USB/keyboard scanner, camera, and the paired phone
+  // One entry point for scan sources: USB/keyboard scanner, camera button, and the paired phone
   const handleCode = async (raw) => {
     const value = String(raw || '').trim();
     if (!value) return;
@@ -63,14 +66,20 @@ export default function POS() {
     try {
       const { data } = await api.get('/sales/lookup', { params: { code: value, warehouseId: cart.warehouseId } });
       if (data.kind === 'unit') {
-        if (cart.items.some((l) => l.unitId === data.unit.id)) return toast.error('That serial number is already in the cart');
+        if (cart.items.some((l) => l.units.some((u) => u.id === data.unit.id))) return toast.error('That serial number is already in the cart');
         dispatch(addUnit(data));
       } else addFromProduct(data.product);
     } catch (err) { toast.fail(err); }
   };
 
-  // codes arriving from the paired Android phone
-  useScanListener(handleCode);
+  // Codes from the paired phone are accepted ONLY while the product scan box has focus
+  useScanListener((scanned) => {
+    if (document.activeElement !== scanRef.current) {
+      toast.info('Click the product scan box first – the scan was ignored');
+      return;
+    }
+    handleCode(scanned);
+  });
 
   // a hardware scanner "types" the code and presses Enter
   const onScan = (e) => {
@@ -82,10 +91,28 @@ export default function POS() {
     handleCode(value);
   };
 
-  const usedUnitIds = cart.items.map((l) => l.unitId).filter(Boolean);
-  const missingSerial = cart.items.some((l) => l.trackSerial && !l.unitId);
+  const usedUnitIds = cart.items.flatMap((l) => l.units.map((u) => u.id));
+  const missingSerial = cart.items.some((l) => l.trackSerial && l.units.length === 0);
   const needsCustomer = t.due > 0 || t.creditUsed > 0;
   const blocked = !cart.items.length || missingSerial || (needsCustomer && !cart.customer);
+
+  // The server takes one item per serial unit: expand each serial row into one item per serial
+  const buildItems = () =>
+    cart.items.flatMap((l) => {
+      const priceChanged = toCents(l.price) !== toCents(l.basePrice) ? { unitPrice: Number(l.price) } : {};
+      if (!l.trackSerial) {
+        return [{ productId: l.productId, quantity: l.qty, ...priceChanged, discount: Number(l.discount || 0) }];
+      }
+      const n = l.units.length;
+      const gross = toCents(l.price) * n;
+      const disc = Math.min(toCents(l.discount), gross); // same cap as the totals
+      const base = Math.floor(disc / n);
+      const rest = disc - base * n;
+      return l.units.map((u, i) => ({
+        productId: l.productId, unitId: u.id, quantity: 1, ...priceChanged,
+        discount: fromCents(base + (i === 0 ? rest : 0)),
+      }));
+    });
 
   const submit = async () => {
     setBusy(true);
@@ -93,11 +120,7 @@ export default function POS() {
       const { data } = await api.post('/sales', {
         customerId: cart.customer?.id ?? null,
         warehouseId: cart.warehouseId,
-        items: cart.items.map((l) => ({
-          productId: l.productId, unitId: l.unitId || undefined, quantity: l.qty,
-          ...(toCents(l.price) !== toCents(l.basePrice) ? { unitPrice: Number(l.price) } : {}),
-          discount: Number(l.discount || 0),
-        })),
+        items: buildItems(),
         discount: fromCents(t.discount),
         creditUsed: fromCents(t.creditUsed),
         paidAmount: fromCents(t.paid),
@@ -148,10 +171,25 @@ export default function POS() {
                   {cart.items.map((l, i) => (
                     <tr key={l.key}>
                       <td><div className="cell-title">{l.name}</div><div className="cell-sub mono">{l.sku}{l.warrantyMonths ? ` · ${l.warrantyMonths} mo warranty` : ''}</div></td>
-                      <td style={{ minWidth: 190 }}>
+                      <td style={{ minWidth: 220 }}>
                         {l.trackSerial ? (
-                          <SerialSelect line={l} warehouseId={cart.warehouseId} usedIds={usedUnitIds}
-                            onPick={(u) => dispatch(patchLine({ key: l.key, patch: { unitId: u?.id || null, serial: u?.serialNumber || null } }))} />
+                          <div className="stack" style={{ gap: 6 }}>
+                            {l.units.length > 0 && (
+                              <div className="flex wrap gap-sm">
+                                {l.units.map((u) => (
+                                  <span key={u.id} className="badge mono" style={{ gap: 6 }}>
+                                    {u.serial}
+                                    <button type="button" aria-label={`Remove ${u.serial}`} onClick={() => dispatch(removeLineUnit({ key: l.key, unitId: u.id }))}
+                                      style={{ border: 0, background: 'none', padding: 0, cursor: 'pointer', display: 'inline-flex', color: 'inherit' }}>
+                                      <X size={13} />
+                                    </button>
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            <SerialSelect line={l} warehouseId={cart.warehouseId} usedIds={usedUnitIds}
+                              onPick={(u) => dispatch(addLineUnit({ key: l.key, unit: u }))} />
+                          </div>
                         ) : <span className="muted">—</span>}
                       </td>
                       <td className="right">
@@ -160,7 +198,7 @@ export default function POS() {
                           onChange={(e) => dispatch(patchLine({ key: l.key, patch: { price: e.target.value } }))} />
                       </td>
                       <td className="right">
-                        {l.trackSerial ? 1 : (
+                        {l.trackSerial ? <strong>{lineQty(l)}</strong> : (
                           <input className="qty-input" type="number" min="1" max={l.available} value={l.qty}
                             onChange={(e) => dispatch(patchLine({ key: l.key, patch: { qty: Math.max(1, Math.min(l.available, Number(e.target.value) || 1)) } }))} />
                         )}
@@ -211,7 +249,7 @@ export default function POS() {
           {t.due > 0 && <div className="callout bad">Balance due <strong>{money(fromCents(t.due))}</strong>{cart.customer ? ' — will stay open on the customer’s account.' : ' — select a customer to sell on credit.'}</div>}
           {t.excess > 0 && cart.customer && <div className="callout ok"><strong>{money(fromCents(t.excess))}</strong> over the total will be <strong>credited to {cart.customer.name}</strong>.</div>}
           {t.excess > 0 && !cart.customer && <div className="callout warn">Change to return: <strong>{money(fromCents(t.excess))}</strong></div>}
-          {missingSerial && <div className="callout warn">Choose a serial number for every serial-tracked item.</div>}
+          {missingSerial && <div className="callout warn">Add at least one serial number for every serial-tracked item.</div>}
 
           <Field label="Voucher note (optional)"><input value={cart.notes} onChange={(e) => dispatch(setField({ field: 'notes', value: e.target.value }))} /></Field>
 
@@ -244,6 +282,7 @@ export default function POS() {
   );
 }
 
+// Dropdown that ADDS the chosen serial to the product's row (it resets after each pick)
 function SerialSelect({ line, warehouseId, usedIds, onPick }) {
   const [units, setUnits] = useState([]);
   useEffect(() => {
@@ -253,10 +292,10 @@ function SerialSelect({ line, warehouseId, usedIds, onPick }) {
     return () => { live = false; };
   }, [line.productId, warehouseId]);
 
-  const options = units.filter((u) => u.id === line.unitId || !usedIds.includes(u.id));
+  const options = units.filter((u) => !usedIds.includes(u.id));
   return (
-    <select value={line.unitId || ''} onChange={(e) => onPick(units.find((u) => u.id === Number(e.target.value)) || null)}>
-      <option value="">Select serial… ({options.length})</option>
+    <select value="" onChange={(e) => { const u = units.find((x) => x.id === Number(e.target.value)); if (u) onPick(u); }}>
+      <option value="">{line.units.length ? 'Add another serial…' : 'Select serial…'} ({options.length})</option>
       {options.map((u) => <option key={u.id} value={u.id}>{u.serialNumber}</option>)}
     </select>
   );

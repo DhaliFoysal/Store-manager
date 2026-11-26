@@ -23,38 +23,51 @@ const newLine = (product, extra = {}) => ({
   trackSerial: product.trackSerial,
   basePrice: Number(product.salePrice),
   price: String(product.salePrice),
-  qty: 1,
+  qty: 1, // non-serial products only; serial lines use units.length
   discount: '',
-  unitId: null,
-  serial: null,
+  units: [], // serial-tracked products: [{ id, serial }]
   available: product.available ?? product.totalStock ?? 0,
   warrantyMonths: product.warrantyMonths || 0,
   ...extra,
 });
+
+// quantity of a line: number of serials for serial-tracked products, otherwise qty
+export const lineQty = (l) => (l.trackSerial ? l.units.length : l.qty);
 
 const slice = createSlice({
   name: 'cart',
   initialState,
   reducers: {
     addProduct(state, { payload: product }) {
-      if (!product.trackSerial) {
-        const existing = state.items.find((l) => l.productId === product.id);
-        if (existing) {
-          if (existing.qty < existing.available) existing.qty += 1;
-          return;
-        }
+      if (product.trackSerial) {
+        // one row per product – serials are added into that row
+        if (!state.items.some((l) => l.productId === product.id && l.trackSerial)) state.items.push(newLine(product));
+        return;
+      }
+      const existing = state.items.find((l) => l.productId === product.id && !l.trackSerial);
+      if (existing) {
+        if (existing.qty < existing.available) existing.qty += 1;
+        return;
       }
       state.items.push(newLine(product));
     },
     addUnit(state, { payload: { product, unit } }) {
-      // a serial product added by barcode waits for its serial – fill that line first
-      const waiting = state.items.find((l) => l.productId === product.id && l.trackSerial && !l.unitId);
-      if (waiting) {
-        waiting.unitId = unit.id;
-        waiting.serial = unit.serialNumber;
+      const u = { id: unit.id, serial: unit.serialNumber };
+      const line = state.items.find((l) => l.productId === product.id && l.trackSerial);
+      if (line) {
+        if (!line.units.some((x) => x.id === u.id)) line.units.push(u);
       } else {
-        state.items.push(newLine(product, { unitId: unit.id, serial: unit.serialNumber }));
+        state.items.push(newLine(product, { units: [u] }));
       }
+    },
+    addLineUnit(state, { payload: { key, unit } }) {
+      const line = state.items.find((l) => l.key === key);
+      if (!line || !unit || line.units.some((x) => x.id === unit.id)) return;
+      line.units.push({ id: unit.id, serial: unit.serialNumber });
+    },
+    removeLineUnit(state, { payload: { key, unitId } }) {
+      const line = state.items.find((l) => l.key === key);
+      if (line) line.units = line.units.filter((u) => u.id !== unitId);
     },
     patchLine(state, { payload: { key, patch } }) {
       const line = state.items.find((l) => l.key === key);
@@ -80,13 +93,13 @@ const slice = createSlice({
   },
 });
 
-export const { addProduct, addUnit, patchLine, removeLine, setField, setWarehouse, resetCart } = slice.actions;
+export const { addProduct, addUnit, addLineUnit, removeLineUnit, patchLine, removeLine, setField, setWarehouse, resetCart } = slice.actions;
 export const cartReducer = slice.reducer;
 
 // All money maths in integer cents
 export function computeTotals(cart) {
   const lines = cart.items.map((l) => {
-    const gross = toCents(l.price) * l.qty;
+    const gross = toCents(l.price) * lineQty(l);
     return { key: l.key, gross, net: Math.max(0, gross - toCents(l.discount)) };
   });
   const subtotal = lines.reduce((a, l) => a + l.net, 0);
