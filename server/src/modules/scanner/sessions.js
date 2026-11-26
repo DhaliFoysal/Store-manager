@@ -1,55 +1,53 @@
-import crypto from 'node:crypto';
+import crypto from "node:crypto";
 
 /**
- * In-memory pairing sessions between a PC (listening over Server-Sent Events) and a phone (posting scans).
- * They are short-lived on purpose. NOTE: memory is per Node process – if you run several API instances
- * behind a load balancer, give the scanner routes sticky routing (or move this Map to Redis).
+ * In-memory live state for a PAIRING (one per user, stored in the DB, never expires).
+ * Only listeners / online-status live here; tokens come from the DB so the phone link survives restarts.
  */
-const TTL_MS = 12 * 60 * 60 * 1000; // a session lives 12 h from creation
-const PHONE_TIMEOUT_MS = 45_000; // phone pings every ~20 s; silent for 45 s = offline
-const MAX_PER_USER = 5;
+const PHONE_TIMEOUT_MS = 45_000;
+const IDLE_EVICT_MS = 30 * 60_000;
 
-const sessions = new Map();
+const sessions = new Map(); // key = pairing code
 
-const rand = (n) => crypto.randomBytes(n).toString('base64url');
+export const rand = (n) => crypto.randomBytes(n).toString("base64url");
 
 export function safeEqual(a, b) {
-  const x = Buffer.from(String(a ?? ''));
-  const y = Buffer.from(String(b ?? ''));
+  const x = Buffer.from(String(a ?? ""));
+  const y = Buffer.from(String(b ?? ""));
   return x.length === y.length && x.length > 0 && crypto.timingSafeEqual(x, y);
 }
 
-export function createSession({ storeId, userId }) {
-  // keep only the newest few sessions per user
-  const mine = [...sessions.values()].filter((s) => s.userId === userId).sort((a, b) => a.createdAt - b.createdAt);
-  while (mine.length >= MAX_PER_USER) closeSession(mine.shift().id);
-
-  const now = Date.now();
-  const s = {
-    id: rand(9),
-    phoneToken: rand(24), // goes into the QR code – lets a phone SEND scans, nothing else
-    streamToken: rand(24), // stays in the PC browser – lets the PC LISTEN
-    storeId,
-    userId,
-    listeners: new Set(),
-    createdAt: now,
-    expiresAt: now + TTL_MS,
-    phoneSeenAt: 0,
-    phoneOnline: false,
-  };
-  sessions.set(s.id, s);
-  return s;
-}
-
-export function getSession(id) {
-  const s = sessions.get(id);
-  if (!s) return null;
-  if (s.expiresAt < Date.now()) {
-    closeSession(id);
-    return null;
+export function ensureSession({
+  code,
+  storeId,
+  userId,
+  phoneToken,
+  streamToken,
+}) {
+  let s = sessions.get(code);
+  if (!s) {
+    s = {
+      id: code,
+      storeId,
+      userId,
+      phoneToken,
+      streamToken,
+      listeners: new Set(),
+      createdAt: Date.now(),
+      expiresAt: Infinity,
+      lastActive: Date.now(),
+      phoneSeenAt: 0,
+      phoneOnline: false,
+    };
+    sessions.set(code, s);
+  } else {
+    s.phoneToken = phoneToken;
+    s.streamToken = streamToken;
   }
   return s;
 }
+
+export const getSession = (id) => sessions.get(id) || null;
 
 export function emit(s, event, data) {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -65,7 +63,7 @@ export function emit(s, event, data) {
 export function closeSession(id) {
   const s = sessions.get(id);
   if (!s) return;
-  emit(s, 'closed', {});
+  emit(s, "closed", {});
   for (const res of s.listeners) {
     try {
       res.end();
@@ -77,29 +75,29 @@ export function closeSession(id) {
   sessions.delete(id);
 }
 
-// phone said hello / heartbeat
 export function touchPhone(s) {
   s.phoneSeenAt = Date.now();
+  s.lastActive = s.phoneSeenAt;
   if (!s.phoneOnline) {
     s.phoneOnline = true;
-    emit(s, 'phone', { online: true });
+    emit(s, "phone", { online: true });
   }
 }
 
-// periodic upkeep: SSE keep-alive, offline detection, expiry
 export function sweep(now = Date.now()) {
   for (const s of [...sessions.values()]) {
-    if (s.expiresAt < now) {
-      closeSession(s.id);
-      continue;
-    }
     if (s.phoneOnline && now - s.phoneSeenAt > PHONE_TIMEOUT_MS) {
       s.phoneOnline = false;
-      emit(s, 'phone', { online: false });
+      emit(s, "phone", { online: false });
     }
+    if (s.listeners.size || s.phoneOnline) s.lastActive = now;
+    else if (now - s.lastActive > IDLE_EVICT_MS) {
+      sessions.delete(s.id);
+      continue;
+    } // re-created from DB on demand
     for (const res of s.listeners) {
       try {
-        res.write(': ping\n\n'); // keeps proxies / Wi-Fi routers from dropping the idle stream
+        res.write(": ping\n\n");
       } catch {
         s.listeners.delete(res);
       }
@@ -111,4 +109,4 @@ const timer = setInterval(sweep, 15_000);
 timer.unref();
 
 export const newScanId = () => crypto.randomUUID();
-export const _sessionCount = () => sessions.size; // for tests
+export const _sessionCount = () => sessions.size;

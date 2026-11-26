@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Inbox, Search, X } from 'lucide-react';
 import { titleCase } from '../app/format.js';
+import { useScanListener } from '../modules/scanner/hooks.js';
 
 export function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
@@ -62,11 +63,16 @@ export function Badge({ children, variant }) {
   return <span className={`badge ${variant ? `badge-${variant}` : ''}`}>{children}</span>;
 }
 
-export function SearchInput({ value, onChange, placeholder = 'Search…' }) {
+export function SearchInput({ value, onChange, placeholder = 'Search…', scannable = true }) {
+  const ref = useRef(null);
+  // a code scanned with the paired phone fills the search box while it has focus
+  useScanListener((code) => {
+    if (scannable && ref.current && document.activeElement === ref.current) onChange(code);
+  });
   return (
     <div className="search">
       <Search />
-      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
+      <input ref={ref} data-scan-target value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
     </div>
   );
 }
@@ -99,7 +105,7 @@ export function Tabs({ tabs, value, onChange }) {
   return (
     <div className="tabs">
       {tabs.map((t) => (
-        <button key={t.value} className={`tab ${value === t.value ? 'active' : ''}`} onClick={() => onChange(t.value)}>
+        <button key={t.value} type="button" className={`tab ${value === t.value ? 'active' : ''}`} onClick={() => onChange(t.value)}>
           {t.label}
         </button>
       ))}

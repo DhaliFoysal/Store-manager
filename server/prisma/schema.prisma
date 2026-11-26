@@ -125,8 +125,20 @@ model User {
   sales           Sale[]
   payments        Payment[]
   claims          WarrantyClaim[]
+  scannerPairing  ScannerPairing?
 
   @@index([storeId, role])
+}
+
+// One permanent phone-scanner link per user (created once, re-used until the user asks for a new one)
+model ScannerPairing {
+  userId      Int      @id
+  code        String   @unique @db.VarChar(40)
+  phoneToken  String   @db.VarChar(80)
+  streamToken String   @db.VarChar(80)
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model RefreshToken {

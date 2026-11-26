@@ -4,13 +4,24 @@ import { api } from '../../app/api.js';
 import { startBridge, stopBridge } from './bridge.js';
 import { scanReceived, sessionCleared, sessionStarted } from './scannerSlice.js';
 
-// Re-opens the live stream after a page reload (the session id is kept in sessionStorage)
+let autoTried = false; // the permanent link is fetched automatically once per page load
+
+// Re-opens the live stream after a reload, and connects automatically (same link every time)
 function useBridgeAutostart() {
   const dispatch = useDispatch();
   const { session, connection } = useSelector((s) => s.scanner);
+
   useEffect(() => {
     if (session && connection === 'idle') startBridge(dispatch, session);
   }, [session, connection, dispatch]);
+
+  useEffect(() => {
+    if (session || autoTried) return;
+    autoTried = true;
+    api.post('/scanner/sessions')
+      .then(({ data }) => { dispatch(sessionStarted(data)); startBridge(dispatch, data); })
+      .catch((e) => { if (e?.response?.status !== 403) autoTried = false; });
+  }, [session, dispatch]);
 }
 
 /** Pairing state + actions for the PC side. */
@@ -19,25 +30,33 @@ export function useScanner() {
   const state = useSelector((s) => s.scanner);
   useBridgeAutostart();
 
+  // returns the SAME permanent link for this user every time
   const pair = useCallback(async () => {
     const { data } = await api.post('/scanner/sessions');
     dispatch(sessionStarted(data));
     startBridge(dispatch, data);
   }, [dispatch]);
 
-  const unpair = useCallback(async () => {
-    if (state.session) await api.delete(`/scanner/sessions/${state.session.id}`).catch(() => {});
+  // stop listening on this PC only – the phone link stays valid
+  const unpair = useCallback(() => {
     stopBridge();
     dispatch(sessionCleared());
-  }, [dispatch, state.session]);
+  }, [dispatch]);
 
-  // lets the local camera feed the same pipeline as the phone
+  // throw the old phone link away and create a new one
+  const renew = useCallback(async () => {
+    const { data } = await api.post('/scanner/sessions/renew');
+    stopBridge();
+    dispatch(sessionStarted(data));
+    startBridge(dispatch, data);
+  }, [dispatch]);
+
   const injectScan = useCallback(
     (code, source = 'camera') => dispatch(scanReceived({ id: crypto.randomUUID(), code, source, ts: Date.now(), match: null })),
     [dispatch],
   );
 
-  return { ...state, pair, unpair, injectScan };
+  return { ...state, pair, unpair, renew, injectScan };
 }
 
 /**

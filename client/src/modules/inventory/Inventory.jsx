@@ -17,8 +17,11 @@ export default function Inventory() {
   const [scanned, setScanned] = useState(''); // last code from a camera / the paired phone
   const manage = can('inventory.manage');
 
-  // a code from the phone jumps straight to the serial-number search (unless a stock dialog is open)
-  useScanListener((code) => { if (!action) { setScanned(code); setTab('serials'); } });
+  // a code from the phone fills the focused search box; otherwise it jumps to the serial-number search (unless a stock dialog is open)
+  useScanListener((code) => {
+    if (action || document.activeElement?.hasAttribute('data-scan-target')) return;
+    setScanned(code); setTab('serials');
+  });
 
   return (
     <>
@@ -58,7 +61,7 @@ function StockTab() {
   return (
     <>
       <div className="toolbar">
-        <SearchInput value={q} onChange={reset(setQ)} placeholder="Search product, SKU or barcode…" />
+        <SearchInput value={q} onChange={reset(setQ)} placeholder="Search product, SKU or barcode (or scan)…" />
         <select value={warehouseId} onChange={(e) => reset(setWarehouseId)(e.target.value)}>
           <option value="">All warehouses</option>
           {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}

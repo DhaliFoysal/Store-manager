@@ -2,15 +2,24 @@ import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { api } from '../app/api.js';
 import { useDebounce, useMoney } from '../app/hooks.js';
+import { useScanListener } from '../modules/scanner/hooks.js';
 
-/** Generic "type to search, pick one" input backed by an API endpoint. */
-export function AsyncPicker({ endpoint, params, toOption, value, onChange, placeholder = 'Search…', disabled }) {
+/** Generic "type to search, pick one" input backed by an API endpoint. `scannable` = phone scans fill the box while focused. */
+export function AsyncPicker({ endpoint, params, toOption, value, onChange, placeholder = 'Search…', disabled, scannable = false }) {
   const [text, setText] = useState('');
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState([]);
   const q = useDebounce(text, 250);
   const box = useRef(null);
+  const inputRef = useRef(null);
   const paramsKey = JSON.stringify(params ?? {});
+
+  useScanListener((code) => {
+    if (scannable && inputRef.current && document.activeElement === inputRef.current) {
+      setText(code);
+      setOpen(true);
+    }
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -47,6 +56,8 @@ export function AsyncPicker({ endpoint, params, toOption, value, onChange, place
   return (
     <div className="picker" ref={box}>
       <input
+        ref={inputRef}
+        data-scan-target
         value={text}
         disabled={disabled}
         placeholder={placeholder}
@@ -101,8 +112,9 @@ export function CustomerPicker(props) {
 export function ProductPicker(props) {
   return (
     <AsyncPicker
+      scannable
       endpoint="/inventory/products"
-      placeholder="Search product by name, SKU or barcode…"
+      placeholder="Search product by name, SKU, barcode or scan…"
       toOption={(p) => ({ label: p.name, sub: `${p.sku} · Stock ${p.totalStock}${p.trackSerial ? ' · Serial tracked' : ''}` })}
       {...props}
     />

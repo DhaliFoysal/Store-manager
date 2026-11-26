@@ -72,13 +72,11 @@ export default function POS() {
     } catch (err) { toast.fail(err); }
   };
 
-  // Codes from the paired phone are accepted ONLY while the product scan box has focus
+  // Codes from the paired phone are added to the cart right away (no need to click the scan box)
   useScanListener((scanned) => {
-    if (document.activeElement !== scanRef.current) {
-      toast.info('Click the product scan box first – the scan was ignored');
-      return;
-    }
+    if (done || newCustomer) return; // a dialog is open
     handleCode(scanned);
+    scanRef.current?.focus();
   });
 
   // a hardware scanner "types" the code and presses Enter
