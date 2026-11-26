@@ -1,0 +1,22 @@
+.cam { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #1d1219; border-radius: 14px; overflow: hidden; }
+.cam video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cam-frame { position: absolute; inset: 18% 10%; border: 3px solid rgba(255, 255, 255, 0.85); border-radius: 14px; box-shadow: 0 0 0 999px rgba(29, 18, 25, 0.38); pointer-events: none; }
+.cam-frame::after { content: ''; position: absolute; left: 6%; right: 6%; height: 3px; background: var(--m-400); box-shadow: 0 0 12px var(--m-500); animation: camscan 2s ease-in-out infinite; }
+@keyframes camscan { 0%, 100% { top: 8%; } 50% { top: 90%; } }
+.cam-flash { position: absolute; inset: 0; background: rgba(15, 138, 95, 0.35); animation: camflash 0.35s forwards; pointer-events: none; }
+@keyframes camflash { to { opacity: 0; } }
+.cam-bar { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; justify-content: space-between; gap: 8px; }
+.cam-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 22px; text-align: center; color: #fff; }
+
+/* phone page */
+.phone { min-height: 100vh; background: var(--bg); padding: 14px; display: flex; flex-direction: column; gap: 12px; max-width: 520px; margin: 0 auto; }
+.phone-head { display: flex; align-items: center; justify-content: space-between; }
+.phone-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--bad); margin-right: 6px; }
+.phone-dot.ok { background: var(--ok); }
+.phone-result { padding: 12px 14px; border-radius: 12px; background: var(--white); border: 1px solid var(--line); }
+.phone-result.ok { border-color: #b9e5d4; background: var(--ok-bg); }
+.phone-result.bad { border-color: #f4c2ca; background: var(--bad-bg); }
+.phone-code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 18px; font-weight: 700; word-break: break-all; }
+.scan-feed { max-height: 320px; overflow-y: auto; }
+.scan-feed .row-item { display: flex; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.qr-box { background: #fff; padding: 12px; border: 1px solid var(--line); border-radius: 12px; display: inline-block; }
