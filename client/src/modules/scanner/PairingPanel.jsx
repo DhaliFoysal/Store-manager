@@ -17,22 +17,24 @@ export default function PairingPanel() {
   const [ip, setIp] = useState("");
 
   const isLocal = LOCAL_HOSTS.includes(window.location.hostname);
-  const net = useFetch("/scanner/network", undefined, {
-    enabled: !!session && isLocal,
-  });
+  const net = useFetch("/scanner/network", undefined, { enabled: !!session });
   const addresses = net.data?.addresses || [];
+  // a real domain in CLIENT_URL never changes -> the phone link stays the same forever
+  const publicUrl = net.data?.publicUrl || "";
 
   const host = ip || addresses[0]?.address;
-  const base = isLocal
-    ? host
-      ? `${window.location.protocol}//${host}${window.location.port ? `:${window.location.port}` : ""}`
-      : ""
-    : window.location.origin;
+  const base = !isLocal
+    ? window.location.origin
+    : publicUrl ||
+      (host
+        ? `${window.location.protocol}//${host}${window.location.port ? `:${window.location.port}` : ""}`
+        : "");
   const url =
     session && base
       ? `${base}/scan?s=${session.id}&t=${session.phoneToken}`
       : "";
   const insecure = url.startsWith("http://");
+  const ipBased = isLocal && !publicUrl;
 
   const run = async (fn) => {
     setBusy(true);
@@ -92,13 +94,13 @@ export default function PairingPanel() {
         </span>
       </div>
 
-      {isLocal && !net.loading && addresses.length === 0 && (
+      {ipBased && !net.loading && addresses.length === 0 && (
         <div className="callout warn">
           No Wi-Fi / LAN address was found on this PC. Connect it to the same
           Wi-Fi as the phone and re-open this window.
         </div>
       )}
-      {isLocal && addresses.length > 1 && (
+      {ipBased && addresses.length > 1 && (
         <Field
           label="This PC's network address"
           hint="Pick the one on the same Wi-Fi as the phone (usually 192.168.x.x)"
@@ -127,8 +129,8 @@ export default function PairingPanel() {
               the link.
             </div>
             <div>
-              <strong>2.</strong> Bookmark it / “Add to Home screen” – next time
-              just open it again, no new QR needed.
+              <strong>2.</strong> Bookmark it / “Add to Home screen” – the phone
+              also remembers it, so next time just open the page again.
             </div>
             <div
               className="mono muted"
@@ -155,6 +157,15 @@ export default function PairingPanel() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {ipBased && (
+        <div className="callout warn">
+          This link uses the PC's Wi-Fi address, which can change when the router
+          gives a new one. For a link that <strong>never</strong> changes, set{" "}
+          <code>CLIENT_URL</code> in <code>server/.env</code> to your real
+          domain (e.g. <code>https://shop.example.com</code>) and restart the
+          server.
         </div>
       )}
       {insecure && (

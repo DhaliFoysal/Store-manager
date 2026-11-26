@@ -2,11 +2,30 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { api } from '../../app/api.js';
 import { startBridge, stopBridge } from './bridge.js';
+import { deliverScan } from './focusFill.js';
 import { scanReceived, sessionCleared, sessionStarted } from './scannerSlice.js';
 
-let autoTried = false; // the permanent link is fetched automatically once per page load
+// ── automatic (re)connection of the permanent link ──
+let pairing = false; // a request is in flight
+let stoppedByUser = false; // "Stop listening on this PC" was pressed
+let blockedUntil = 0; // 401/403: this user may not use the scanner – don't hammer the API
+let retryTimer = null;
 
-// Re-opens the live stream after a reload, and connects automatically (same link every time)
+function autoPair(dispatch) {
+  if (pairing || stoppedByUser || Date.now() < blockedUntil) return;
+  pairing = true;
+  api.post('/scanner/sessions')
+    .then(({ data }) => { dispatch(sessionStarted(data)); startBridge(dispatch, data); })
+    .catch((e) => {
+      const status = e?.response?.status;
+      if (status === 401 || status === 403) { blockedUntil = Date.now() + 60_000; return; }
+      clearTimeout(retryTimer); // server restarting / network down: try again shortly
+      retryTimer = setTimeout(() => autoPair(dispatch), 5000);
+    })
+    .finally(() => { pairing = false; });
+}
+
+// Re-opens the live stream after a reload and reconnects by itself whenever the stream was dropped
 function useBridgeAutostart() {
   const dispatch = useDispatch();
   const { session, connection } = useSelector((s) => s.scanner);
@@ -16,11 +35,7 @@ function useBridgeAutostart() {
   }, [session, connection, dispatch]);
 
   useEffect(() => {
-    if (session || autoTried) return;
-    autoTried = true;
-    api.post('/scanner/sessions')
-      .then(({ data }) => { dispatch(sessionStarted(data)); startBridge(dispatch, data); })
-      .catch((e) => { if (e?.response?.status !== 403) autoTried = false; });
+    if (!session) autoPair(dispatch);
   }, [session, dispatch]);
 }
 
@@ -32,6 +47,7 @@ export function useScanner() {
 
   // returns the SAME permanent link for this user every time
   const pair = useCallback(async () => {
+    stoppedByUser = false;
     const { data } = await api.post('/scanner/sessions');
     dispatch(sessionStarted(data));
     startBridge(dispatch, data);
@@ -39,20 +55,23 @@ export function useScanner() {
 
   // stop listening on this PC only – the phone link stays valid
   const unpair = useCallback(() => {
+    stoppedByUser = true;
     stopBridge();
     dispatch(sessionCleared());
   }, [dispatch]);
 
   // throw the old phone link away and create a new one
   const renew = useCallback(async () => {
+    stoppedByUser = false;
     const { data } = await api.post('/scanner/sessions/renew');
     stopBridge();
     dispatch(sessionStarted(data));
     startBridge(dispatch, data);
   }, [dispatch]);
 
+  // a code from this device's own camera: goes to the focused text box too
   const injectScan = useCallback(
-    (code, source = 'camera') => dispatch(scanReceived({ id: crypto.randomUUID(), code, source, ts: Date.now(), match: null })),
+    (code, source = 'camera') => dispatch(scanReceived(deliverScan({ id: crypto.randomUUID(), code, source, ts: Date.now(), match: null }))),
     [dispatch],
   );
 
@@ -60,7 +79,7 @@ export function useScanner() {
 }
 
 /**
- * Call `handler(code, scan)` for every code that arrives from the paired phone.
+ * Call `handler(code, scan)` for every code from the paired phone that was NOT already typed into a focused text box.
  * Codes that arrived before this page was opened are NOT replayed.
  */
 export function useScanListener(handler) {
@@ -73,7 +92,7 @@ export function useScanListener(handler) {
   useEffect(() => {
     if (last && last.id !== seen.current) {
       seen.current = last.id;
-      fn.current(last.code, last);
+      if (!last.filled) fn.current(last.code, last);
     }
   }, [last]);
 }

@@ -4,6 +4,7 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../core/db.js';
+import { env } from '../../core/env.js';
 import { asyncHandler, validate } from '../../core/http.js';
 import { authenticate, requireAnyPermission, requireStore } from '../../core/auth.js';
 import { AppError, unauthorized } from '../../core/errors.js';
@@ -31,6 +32,17 @@ const phoneLimiter = rateLimit({
 const isPrivate = (ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
 const newTokens = () => ({ code: rand(9), phoneToken: rand(24), streamToken: rand(24) });
 const FAR_FUTURE = () => Date.now() + 365 * 24 * 3600 * 1000;
+
+// A real (non-localhost) CLIENT_URL is the only address that never changes – use it for the phone link.
+function stablePublicUrl() {
+  try {
+    const u = new URL(env.CLIENT_URL);
+    if (['localhost', '127.0.0.1', '::1', '[::1]'].includes(u.hostname)) return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
 
 async function getOrCreatePairing(userId) {
   const found = await prisma.scannerPairing.findUnique({ where: { userId } });
@@ -68,7 +80,7 @@ router.get('/network', ...pcGuard, (req, res) => {
     .filter((i) => i.family === 'IPv4' && !i.internal)
     .map((i) => ({ name: i.name, address: i.address, private: isPrivate(i.address) }))
     .sort((a, b) => Number(b.private) - Number(a.private));
-  res.json({ addresses });
+  res.json({ addresses, publicUrl: stablePublicUrl() });
 });
 
 router.post(

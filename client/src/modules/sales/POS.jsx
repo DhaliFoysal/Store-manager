@@ -72,7 +72,7 @@ export default function POS() {
     } catch (err) { toast.fail(err); }
   };
 
-  // Codes from the paired phone are added to the cart right away (no need to click the scan box)
+  // Phone codes that were NOT typed into a clicked text box (scan box / nothing focused) are added to the cart
   useScanListener((scanned) => {
     if (done || newCustomer) return; // a dialog is open
     handleCode(scanned);
@@ -146,7 +146,7 @@ export default function POS() {
           <div className="card card-pad">
             <div className="scan-box">
               <ScanLine />
-              <input ref={scanRef} value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={onScan} autoComplete="off"
+              <input ref={scanRef} data-scan-passthrough value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={onScan} autoComplete="off"
                 placeholder="Scan barcode / serial number, or type a product name…" />
               {suggestions.length > 0 && code.trim().length >= 2 && (
                 <div className="picker-menu">

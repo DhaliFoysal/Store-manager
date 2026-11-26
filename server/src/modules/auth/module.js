@@ -32,6 +32,7 @@ function sendSession(res, { refreshToken, ...session }, status = 200) {
 
 const email = z.string().trim().toLowerCase().email().max(190);
 const phone = z.string().trim().max(40).optional().nullable().transform((v) => v || null);
+const resetCode = z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code');
 
 router.post(
   '/register',
@@ -97,22 +98,35 @@ router.post(
   ),
 );
 
+// 1) e-mail a 6-digit code
 router.post(
   '/forgot-password',
   limiter,
   validate({ body: z.object({ email }) }),
   asyncHandler(async (req, res) => {
     await svc.forgotPassword(req.body.email);
-    res.json({ message: 'If that e-mail belongs to an active account, a reset link has been sent.' });
+    res.json({ message: 'If that e-mail belongs to an active account, a 6-digit code has been sent.' });
   }),
 );
 
+// 2) check the code (does not consume it)
+router.post(
+  '/verify-reset-code',
+  limiter,
+  validate({ body: z.object({ email, code: resetCode }) }),
+  asyncHandler(async (req, res) => {
+    await svc.verifyResetCode(req.body.email, req.body.code);
+    res.json({ ok: true });
+  }),
+);
+
+// 3) set the new password with the same code
 router.post(
   '/reset-password',
   limiter,
-  validate({ body: z.object({ token: z.string().min(10).max(200), password: zPassword }) }),
+  validate({ body: z.object({ email, code: resetCode, password: zPassword }) }),
   asyncHandler(async (req, res) => {
-    await svc.resetPassword(req.body.token, req.body.password);
+    await svc.resetPassword(req.body.email, req.body.code, req.body.password);
     res.json({ message: 'Password updated. You can now sign in.' });
   }),
 );

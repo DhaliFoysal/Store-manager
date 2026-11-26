@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../../core/db.js';
 import { env } from '../../core/env.js';
@@ -112,28 +113,58 @@ export async function changePassword(userId, currentPassword, newPassword) {
   return { ...tokens, ...(await buildSession(userId)) };
 }
 
+// ───────── password reset by 6-digit e-mailed code ─────────
+const RESET_TTL_MS = 10 * 60_000; // code is valid for 10 minutes
+const RESET_MAX_ATTEMPTS = 5; // wrong guesses before the code is dead
+const RESET_RESEND_GAP_MS = 60_000; // one new code per minute
+
+// the code alone is only 6 digits, so it is bound to the user id and a server secret before hashing
+const codeHash = (userId, code) => sha256(`${env.JWT_ACCESS_SECRET}:${userId}:${code}`);
+
 export async function forgotPassword(email) {
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user || user.status !== 'ACTIVE') return; // same response either way
-  const token = randomToken(32);
+  const recent = await prisma.passwordReset.findFirst({
+    where: { userId: user.id, usedAt: null, createdAt: { gt: new Date(Date.now() - RESET_RESEND_GAP_MS) } },
+  });
+  if (recent) return;
+
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
   await prisma.passwordReset.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } });
   await prisma.passwordReset.create({
-    data: { userId: user.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + 60 * 60_000) },
+    data: { userId: user.id, tokenHash: codeHash(user.id, code), expiresAt: new Date(Date.now() + RESET_TTL_MS) },
   });
-  const link = `${env.CLIENT_URL}/reset-password?token=${token}`;
   await sendMail({
     to: user.email,
-    subject: 'Reset your password',
-    text: `Hello ${user.name},\n\nUse the link below to choose a new password. It is valid for 1 hour.\n\n${link}\n\nIf you did not request this, you can ignore this e-mail.`,
+    subject: `Your password reset code: ${code}`,
+    text: `Hello ${user.name},\n\nYour verification code is:\n\n    ${code}\n\nIt is valid for 10 minutes. Enter it on the reset page to choose a new password.\n\nIf you did not request this, you can ignore this e-mail.`,
   });
 }
 
-export async function resetPassword(token, newPassword) {
-  const rec = await prisma.passwordReset.findUnique({ where: { tokenHash: sha256(token) } });
-  if (!rec || rec.usedAt || rec.expiresAt < new Date()) throw badRequest('This reset link is invalid or has expired');
+// Validates the code without consuming it. Wrong guesses are counted; after 5 the code is dead.
+async function checkResetCode(email, code) {
+  const fail = () => badRequest('This code is invalid or has expired');
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) throw fail();
+  const rec = await prisma.passwordReset.findFirst({ where: { userId: user.id, usedAt: null }, orderBy: { id: 'desc' } });
+  if (!rec || rec.expiresAt < new Date() || rec.attempts >= RESET_MAX_ATTEMPTS) throw fail();
+  if (rec.tokenHash !== codeHash(user.id, code)) {
+    await prisma.passwordReset.update({ where: { id: rec.id }, data: { attempts: { increment: 1 } } });
+    throw fail();
+  }
+  return rec;
+}
+
+export async function verifyResetCode(email, code) {
+  await checkResetCode(email, code);
+}
+
+export async function resetPassword(email, code, newPassword) {
+  const rec = await checkResetCode(email, code);
+  const passwordHash = await hashPassword(newPassword);
   await prisma.$transaction([
     prisma.passwordReset.update({ where: { id: rec.id }, data: { usedAt: new Date() } }),
-    prisma.user.update({ where: { id: rec.userId }, data: { passwordHash: await hashPassword(newPassword) } }),
+    prisma.user.update({ where: { id: rec.userId }, data: { passwordHash } }),
     prisma.refreshToken.updateMany({ where: { userId: rec.userId, revokedAt: null }, data: { revokedAt: new Date() } }),
   ]);
 }

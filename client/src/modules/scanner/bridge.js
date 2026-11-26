@@ -1,4 +1,5 @@
 import { connectionChanged, phoneChanged, scanReceived, sessionCleared } from './scannerSlice.js';
+import { deliverScan } from './focusFill.js';
 
 // One EventSource per browser tab, kept alive across page navigation (it lives outside React).
 let es = null;
@@ -30,7 +31,8 @@ export function startBridge(dispatch, session) {
   source.onopen = () => dispatch(connectionChanged('open'));
   source.addEventListener('state', (e) => dispatch(phoneChanged(!!parse(e).phoneOnline)));
   source.addEventListener('phone', (e) => dispatch(phoneChanged(!!parse(e).online)));
-  source.addEventListener('scan', (e) => dispatch(scanReceived(parse(e))));
+  // the code is typed into the focused text box first; only if there is none do page listeners get it
+  source.addEventListener('scan', (e) => dispatch(scanReceived(deliverScan(parse(e)))));
   source.addEventListener('closed', () => {
     stopBridge();
     dispatch(sessionCleared());
