@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Ban, Banknote, Printer } from 'lucide-react';
 import { api } from '../../app/api.js';
@@ -7,6 +7,25 @@ import { fmtDate, fmtDateTime, titleCase } from '../../app/format.js';
 import { Field, Loading, Modal, PageHeader, StatusBadge } from '../../components/ui.jsx';
 import PrintHeader from '../../components/PrintHeader.jsx';
 import ReceivePaymentModal from '../payments/ReceivePaymentModal.jsx';
+
+// One row per product (same product + same unit price + same warranty); serial numbers are listed under it.
+function groupItems(items = []) {
+  const map = new Map();
+  for (const it of items) {
+    const key = `${it.productId}|${Number(it.unitPrice)}|${it.warrantyMonths}`;
+    let g = map.get(key);
+    if (!g) {
+      g = { key, productName: it.productName, sku: it.sku, unitPrice: it.unitPrice, warrantyMonths: it.warrantyMonths, warrantyEnd: it.warrantyEnd, quantity: 0, discount: 0, lineTotal: 0, serials: [] };
+      map.set(key, g);
+    }
+    g.quantity += it.quantity;
+    g.discount += Number(it.discount);
+    g.lineTotal += Number(it.lineTotal);
+    if (it.serialNumber) g.serials.push(it.serialNumber);
+    if (it.warrantyEnd && (!g.warrantyEnd || new Date(it.warrantyEnd) > new Date(g.warrantyEnd))) g.warrantyEnd = it.warrantyEnd;
+  }
+  return [...map.values()];
+}
 
 export default function Voucher() {
   const { id } = useParams();
@@ -18,6 +37,7 @@ export default function Voucher() {
   const [paying, setPaying] = useState(false);
   const [voiding, setVoiding] = useState(false);
   const [reason, setReason] = useState('');
+  const rows = useMemo(() => groupItems(s?.items), [s]);
 
   // ?print=1 (from the POS / list) opens the browser print dialog once the voucher is on screen
   useEffect(() => {
@@ -32,6 +52,7 @@ export default function Voucher() {
   const m = (v) => money(v);
   const due = Number(s.dueAmount);
   const notes = [s.store.voucherNotes, s.notes].filter(Boolean).join('\n\n');
+  const sub = { color: '#8a7683', fontSize: 10 };
 
   const doVoid = async () => {
     try {
@@ -75,18 +96,21 @@ export default function Voucher() {
 
           <table>
             <thead>
-              <tr><th style={{ width: 28 }}>#</th><th>Description</th><th>Serial no.</th><th>Warranty until</th><th className="r">Qty</th><th className="r">Unit price</th><th className="r">Disc.</th><th className="r">Amount</th></tr>
+              <tr><th style={{ width: 28 }}>#</th><th>Description</th><th>Warranty until</th><th className="r">Qty</th><th className="r">Unit price</th><th className="r">Disc.</th><th className="r">Amount</th></tr>
             </thead>
             <tbody>
-              {s.items.map((it, i) => (
-                <tr key={it.id}>
+              {rows.map((it, i) => (
+                <tr key={it.key}>
                   <td>{i + 1}</td>
-                  <td><strong>{it.productName}</strong><div style={{ color: '#8a7683', fontSize: 10 }}>{it.sku}</div></td>
-                  <td className="mono">{it.serialNumber || '—'}</td>
-                  <td>{it.warrantyEnd ? <>{fmtDate(it.warrantyEnd)}<div style={{ color: '#8a7683', fontSize: 10 }}>{it.warrantyMonths} month(s)</div></> : '—'}</td>
+                  <td>
+                    <strong>{it.productName}</strong>
+                    <div style={sub}>{it.sku}</div>
+                    {it.serials.length > 0 && <div style={{ ...sub, wordBreak: 'break-word' }}>{it.serials.join(', ')}</div>}
+                  </td>
+                  <td>{it.warrantyEnd ? <>{fmtDate(it.warrantyEnd)}<div style={sub}>{it.warrantyMonths} month(s)</div></> : '—'}</td>
                   <td className="r">{it.quantity}</td>
                   <td className="r">{m(it.unitPrice)}</td>
-                  <td className="r">{Number(it.discount) > 0 ? m(it.discount) : '—'}</td>
+                  <td className="r">{it.discount > 0 ? m(it.discount) : '—'}</td>
                   <td className="r"><strong>{m(it.lineTotal)}</strong></td>
                 </tr>
               ))}
