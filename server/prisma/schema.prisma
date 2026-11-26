@@ -1,0 +1,433 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────── Enums ─────────────
+enum Role {
+  SUPER_ADMIN
+  OWNER
+  ADMIN
+  USER
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  INACTIVE
+  REJECTED
+}
+
+enum StoreStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
+enum UnitStatus {
+  IN_STOCK
+  SOLD
+  DEFECTIVE
+  LOST
+}
+
+enum MovementType {
+  RECEIVE
+  SALE
+  ADJUST
+  TRANSFER_IN
+  TRANSFER_OUT
+  VOID_RETURN
+}
+
+enum SaleStatus {
+  PAID
+  PARTIAL
+  DUE
+  VOID
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  BKASH
+  NAGAD
+  BANK
+  CREDIT
+}
+
+enum ClaimStatus {
+  RECEIVED
+  IN_REPAIR
+  REPAIRED
+  REPLACED
+  REJECTED
+  RETURNED
+}
+
+enum LedgerType {
+  DEPOSIT
+  OVERPAYMENT
+  CREDIT_USED
+  VOID_REFUND
+}
+
+// ───────────── Tenancy / auth ─────────────
+model Store {
+  id           Int         @id @default(autoincrement())
+  name         String      @db.VarChar(150)
+  status       StoreStatus @default(PENDING)
+  logoPath     String?     @db.VarChar(255)
+  address      String?     @db.Text
+  phone        String?     @db.VarChar(40)
+  email        String?     @db.VarChar(150)
+  voucherNotes String?     @db.Text
+  currency     String      @default("BDT") @db.VarChar(8)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  users      User[]
+  categories Category[]
+  warehouses Warehouse[]
+  products   Product[]
+  units      ProductUnit[]
+  movements  StockMovement[]
+  customers  Customer[]
+  ledger     CustomerLedger[]
+  sales      Sale[]
+  payments   Payment[]
+  claims     WarrantyClaim[]
+  counters   Counter[]
+}
+
+model User {
+  id           Int        @id @default(autoincrement())
+  storeId      Int?
+  name         String     @db.VarChar(120)
+  email        String     @unique @db.VarChar(190)
+  phone        String?    @db.VarChar(40)
+  passwordHash String     @db.VarChar(100)
+  role         Role       @default(USER)
+  status       UserStatus @default(PENDING)
+  // Array of permission keys (only used for role USER). null == none.
+  permissions  Json?
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  store           Store?          @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  refreshTokens   RefreshToken[]
+  passwordResets  PasswordReset[]
+  sales           Sale[]
+  payments        Payment[]
+  claims          WarrantyClaim[]
+
+  @@index([storeId, role])
+}
+
+model RefreshToken {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  tokenHash String    @unique @db.VarChar(64)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordReset {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  tokenHash String    @unique @db.VarChar(64)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Counter {
+  storeId Int
+  key     String @db.VarChar(20)
+  value   Int    @default(0)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@id([storeId, key])
+}
+
+// ───────────── Catalogue & inventory ─────────────
+model Category {
+  id          Int     @id @default(autoincrement())
+  storeId     Int
+  name        String  @db.VarChar(120)
+  description String? @db.VarChar(255)
+
+  store    Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([storeId, name])
+}
+
+model Warehouse {
+  id        Int     @id @default(autoincrement())
+  storeId   Int
+  name      String  @db.VarChar(120)
+  address   String? @db.VarChar(255)
+  isDefault Boolean @default(false)
+  isActive  Boolean @default(true)
+
+  store      Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  stock      StockLevel[]
+  units      ProductUnit[]
+  movements  StockMovement[]
+  sales      Sale[]
+
+  @@unique([storeId, name])
+}
+
+model Product {
+  id            Int      @id @default(autoincrement())
+  storeId       Int
+  categoryId    Int?
+  sku           String   @db.VarChar(60)
+  barcode       String?  @db.VarChar(100)
+  name          String   @db.VarChar(200)
+  description   String?  @db.Text
+  costPrice     Decimal  @default(0) @db.Decimal(14, 2)
+  salePrice     Decimal  @db.Decimal(14, 2)
+  warrantyMonths Int     @default(0)
+  trackSerial   Boolean  @default(false)
+  reorderLevel  Int      @default(0)
+  // Denormalised sum of StockLevel.quantity, maintained by inventory.adjustStock()
+  totalStock    Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  store     Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  category  Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  stock     StockLevel[]
+  units     ProductUnit[]
+  movements StockMovement[]
+  saleItems SaleItem[]
+
+  @@unique([storeId, sku])
+  @@unique([storeId, barcode])
+  @@index([storeId, name])
+}
+
+model StockLevel {
+  id          Int @id @default(autoincrement())
+  productId   Int
+  warehouseId Int
+  quantity    Int @default(0)
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@unique([productId, warehouseId])
+}
+
+// One row per physical item for serial-tracked products
+model ProductUnit {
+  id           Int        @id @default(autoincrement())
+  storeId      Int
+  productId    Int
+  warehouseId  Int
+  serialNumber String     @db.VarChar(120)
+  status       UnitStatus @default(IN_STOCK)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  store     Store      @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product   Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse Warehouse  @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  saleItem  SaleItem?
+
+  @@unique([storeId, serialNumber])
+  @@index([productId, status])
+  @@index([warehouseId])
+}
+
+model StockMovement {
+  id          Int          @id @default(autoincrement())
+  storeId     Int
+  productId   Int
+  warehouseId Int
+  type        MovementType
+  quantity    Int
+  refType     String?      @db.VarChar(30)
+  refId       Int?
+  note        String?      @db.VarChar(255)
+  userId      Int?
+  createdAt   DateTime     @default(now())
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@index([storeId, createdAt])
+  @@index([productId])
+}
+
+// ───────────── Customers ─────────────
+model Customer {
+  id        Int      @id @default(autoincrement())
+  storeId   Int
+  name      String   @db.VarChar(150)
+  phone     String   @db.VarChar(40)
+  email     String?  @db.VarChar(150)
+  address   String?  @db.Text
+  // Money the customer has paid in advance / overpaid. Spendable on future vouchers.
+  credit    Decimal  @default(0) @db.Decimal(14, 2)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store    Store            @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  sales    Sale[]
+  payments Payment[]
+  ledger   CustomerLedger[]
+
+  @@unique([storeId, phone])
+  @@index([storeId, name])
+}
+
+model CustomerLedger {
+  id           Int        @id @default(autoincrement())
+  storeId      Int
+  customerId   Int
+  type         LedgerType
+  amount       Decimal    @db.Decimal(14, 2) // signed: + adds credit, - spends credit
+  balanceAfter Decimal    @db.Decimal(14, 2)
+  refType      String?    @db.VarChar(30)
+  refId        Int?
+  note         String?    @db.VarChar(255)
+  userId       Int?
+  createdAt    DateTime   @default(now())
+
+  store    Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
+}
+
+// ───────────── Sales (a Sale IS the voucher) ─────────────
+model Sale {
+  id             Int        @id @default(autoincrement())
+  storeId        Int
+  voucherNo      String     @db.VarChar(30)
+  customerId     Int?
+  warehouseId    Int
+  userId         Int
+  subtotal       Decimal    @db.Decimal(14, 2)
+  discount       Decimal    @default(0) @db.Decimal(14, 2)
+  total          Decimal    @db.Decimal(14, 2)
+  creditUsed     Decimal    @default(0) @db.Decimal(14, 2)
+  paidAmount     Decimal    @default(0) @db.Decimal(14, 2) // settled so far (credit used + cash applied)
+  dueAmount      Decimal    @default(0) @db.Decimal(14, 2)
+  changeReturned Decimal    @default(0) @db.Decimal(14, 2)
+  status         SaleStatus @default(PAID)
+  notes          String?    @db.VarChar(500)
+  voidedAt       DateTime?
+  voidReason     String?    @db.VarChar(255)
+  createdAt      DateTime   @default(now())
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  customer  Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items     SaleItem[]
+  payments  Payment[]
+
+  @@unique([storeId, voucherNo])
+  @@index([storeId, createdAt])
+  @@index([storeId, status])
+  @@index([customerId])
+}
+
+model SaleItem {
+  id             Int       @id @default(autoincrement())
+  saleId         Int
+  productId      Int
+  productUnitId  Int?      @unique
+  productName    String    @db.VarChar(200)
+  sku            String    @db.VarChar(60)
+  serialNumber   String?   @db.VarChar(120)
+  quantity       Int
+  unitPrice      Decimal   @db.Decimal(14, 2)
+  discount       Decimal   @default(0) @db.Decimal(14, 2)
+  lineTotal      Decimal   @db.Decimal(14, 2)
+  warrantyMonths Int       @default(0)
+  warrantyStart  DateTime?
+  warrantyEnd    DateTime?
+
+  sale        Sale            @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product     Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productUnit ProductUnit?    @relation(fields: [productUnitId], references: [id], onDelete: SetNull)
+  claims      WarrantyClaim[]
+
+  @@index([serialNumber])
+  @@index([warrantyEnd])
+  @@index([saleId])
+}
+
+// A payment slip. Linked to a voucher (saleId) or, for plain deposits, only to a customer.
+model Payment {
+  id             Int           @id @default(autoincrement())
+  storeId        Int
+  slipNo         String        @db.VarChar(30)
+  saleId         Int?
+  customerId     Int?
+  method         PaymentMethod
+  amount         Decimal       @db.Decimal(14, 2) // = appliedAmount + creditedAmount
+  appliedAmount  Decimal       @default(0) @db.Decimal(14, 2) // settled against the voucher
+  creditedAmount Decimal       @default(0) @db.Decimal(14, 2) // excess kept as customer credit
+  saleDueAfter   Decimal?      @db.Decimal(14, 2)
+  reference      String?       @db.VarChar(120)
+  note           String?       @db.VarChar(255)
+  userId         Int
+  createdAt      DateTime      @default(now())
+
+  store    Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  sale     Sale?     @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  user     User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([storeId, slipNo])
+  @@index([saleId])
+  @@index([customerId])
+  @@index([storeId, createdAt])
+}
+
+// ───────────── Warranty ─────────────
+model WarrantyClaim {
+  id                Int         @id @default(autoincrement())
+  storeId           Int
+  ticketNo          String      @db.VarChar(30)
+  saleItemId        Int
+  issue             String      @db.Text
+  status            ClaimStatus @default(RECEIVED)
+  resolution        String?     @db.Text
+  replacementSerial String?     @db.VarChar(120)
+  outOfWarranty     Boolean     @default(false)
+  receivedAt        DateTime    @default(now())
+  closedAt          DateTime?
+  createdById       Int
+  updatedAt         DateTime    @updatedAt
+
+  store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  saleItem  SaleItem @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+  createdBy User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([storeId, ticketNo])
+  @@index([saleItemId])
+  @@index([storeId, status])
+}
